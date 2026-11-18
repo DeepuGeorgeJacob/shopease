@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Block commits while a protected branch (main/master) is checked out.
+set -euo pipefail
+
+protected="${GIT_PROTECTED_BRANCHES:-main master}"
+current="$(git symbolic-ref --quiet --short HEAD || true)"
+
+if [ -z "$current" ]; then
+  exit 0
+fi
+
+for b in $protected; do
+  if [ "$current" = "$b" ]; then
+    echo "ERROR: commits to protected branch '$b' are blocked." >&2
+    echo "Create a feature branch first:" >&2
+    echo "  git switch -c <type>/<slug> origin/$b" >&2
+    exit 1
+  fi
+done
+
+exit 0
