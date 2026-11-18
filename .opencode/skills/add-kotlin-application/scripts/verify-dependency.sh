@@ -3,6 +3,10 @@
 # whether the project's Spring Boot BOM manages it (including BOMs that
 # spring-boot-dependencies imports, such as jackson-bom or junit-bom).
 #
+# When the catalog defines a kotlin version key, also inspect the artifact's
+# POM for the Kotlin version it declares, so a library built with newer Kotlin
+# metadata is visible before a Kotlin module fails to compile.
+#
 # Usage:
 #   verify-dependency.sh <group:artifact>              # latest releases + BOM status
 #   verify-dependency.sh <group:artifact> <version>    # also assert version exists
@@ -116,9 +120,31 @@ def parse(text):
     return root, ns
 
 
+def project_properties(root, ns):
+    """Implicit ${project.*} values from the POM's own (or parent) coordinates."""
+    group = (root.findtext(ns + "groupId") or "").strip()
+    artifact = (root.findtext(ns + "artifactId") or "").strip()
+    version = (root.findtext(ns + "version") or "").strip()
+    parent = root.find(ns + "parent")
+    if parent is not None:
+        group = group or (parent.findtext(ns + "groupId") or "").strip()
+        version = version or (parent.findtext(ns + "version") or "").strip()
+    values = {}
+    if group:
+        values["project.groupId"] = group
+        values["pom.groupId"] = group
+    if artifact:
+        values["project.artifactId"] = artifact
+        values["pom.artifactId"] = artifact
+    if version:
+        values["project.version"] = version
+        values["pom.version"] = version
+    return values
+
+
 def properties(root, ns, depth=0):
     """Effective <properties>, inheriting from parent POMs (child wins)."""
-    inherited = {}
+    inherited = project_properties(root, ns)
     if depth < 3:
         parent = root.find(ns + "parent")
         if parent is not None:
@@ -169,8 +195,10 @@ def managed_version(text, want_group, want_artifact, depth=0):
     props = properties(root, ns)
     imports = []
     for dep in deps.findall(ns + "dependency"):
-        dg = (dep.findtext(ns + "groupId") or "").strip()
-        da = (dep.findtext(ns + "artifactId") or "").strip()
+        raw_group = (dep.findtext(ns + "groupId") or "").strip()
+        raw_artifact = (dep.findtext(ns + "artifactId") or "").strip()
+        dg = resolve(raw_group, props) or raw_group
+        da = resolve(raw_artifact, props) or raw_artifact
         dv = (dep.findtext(ns + "version") or "").strip()
         scope = (dep.findtext(ns + "scope") or "").strip()
         if scope == "import":
@@ -209,6 +237,129 @@ else:
     print("managed=false")
     print("managed_version=")
 PY
+fi
+
+# Kotlin metadata check, when the catalog defines a kotlin version key.
+kotlin_project_version=""
+[ -f "$catalog" ] && kotlin_project_version="$(sed -n 's/^[[:space:]]*kotlin[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$catalog" | head -1)"
+
+if [ -z "$kotlin_project_version" ]; then
+    echo "kotlin_checked=false"
+else
+    inspect_version="${wanted:-$stable}"
+    echo "kotlin_project_version=${kotlin_project_version}"
+    if [ -z "$inspect_version" ]; then
+        echo "kotlin_checked=false"
+        echo "note: no release version available to inspect for Kotlin metadata" >&2
+    elif ! command -v python3 >/dev/null 2>&1; then
+        echo "kotlin_checked=false"
+        echo "note: python3 not available; cannot inspect the POM for Kotlin metadata" >&2
+    else
+        python3 - "$group" "$artifact" "$inspect_version" "$kotlin_project_version" <<'PY'
+import re
+import sys
+import urllib.request
+import xml.etree.ElementTree as ET
+
+group, artifact, version, project = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+BASE = "https://repo1.maven.org/maven2"
+pom = f"{BASE}/{group.replace('.', '/')}/{artifact}/{version}/{artifact}-{version}.pom"
+
+try:
+    with urllib.request.urlopen(pom, timeout=30) as response:
+        text = response.read().decode("utf-8", "replace")
+except Exception:
+    print("kotlin_checked=false")
+    print("kotlin_compatibility=unknown")
+    print("note: could not fetch the POM to inspect Kotlin metadata", file=sys.stderr)
+    sys.exit(0)
+
+try:
+    root = ET.fromstring(text)
+except ET.ParseError:
+    print("kotlin_checked=false")
+    print("kotlin_compatibility=unknown")
+    print("note: could not parse the POM to inspect Kotlin metadata", file=sys.stderr)
+    sys.exit(0)
+
+ns = root.tag.split("}")[0] + "}" if root.tag.startswith("{") else ""
+
+props = {}
+element = root.find(ns + "properties")
+if element is not None:
+    for child in list(element):
+        props[child.tag.split("}")[-1]] = (child.text or "").strip()
+
+
+def resolve(value):
+    seen = 0
+    while value.startswith("${") and value.endswith("}") and seen < 5:
+        key = value[2:-1]
+        if key not in props:
+            return None
+        value = props[key]
+        seen += 1
+    return None if "$" in value else value
+
+
+def looks_like_version(value):
+    return bool(re.match(r"^\d+\.\d+(\.\d+)?", value or ""))
+
+
+def major_minor(value):
+    parts = re.findall(r"\d+", value or "")
+    return tuple(int(p) for p in parts[:2]) if len(parts) >= 2 else None
+
+
+candidates = []
+for key, value in props.items():
+    if "kotlin" in key.lower():
+        resolved = resolve(value)
+        if resolved and looks_like_version(resolved):
+            candidates.append(resolved)
+
+for dependency in root.iter(ns + "dependency"):
+    dep_group = (dependency.findtext(ns + "groupId") or "").strip()
+    dep_artifact = (dependency.findtext(ns + "artifactId") or "").strip()
+    dep_version = (dependency.findtext(ns + "version") or "").strip()
+    if dep_group == "org.jetbrains.kotlin" and dep_artifact == "kotlin-stdlib":
+        resolved = resolve(dep_version)
+        if resolved and looks_like_version(resolved):
+            candidates.append(resolved)
+
+library_version = None
+library_key = None
+for candidate in candidates:
+    key = major_minor(candidate)
+    if key and (library_key is None or key > library_key):
+        library_key = key
+        library_version = candidate
+
+project_key = major_minor(project)
+
+print("kotlin_checked=true")
+print("kotlin_compatibility_basis=pom_declared_kotlin")
+if library_version is None:
+    print("kotlin_library_version=unknown")
+    print("kotlin_compatibility=unknown")
+    print("note: the POM does not declare a Kotlin version; compatibility not assessed", file=sys.stderr)
+elif project_key is None:
+    print(f"kotlin_library_version={library_version}")
+    print("kotlin_compatibility=unknown")
+    print(f"note: could not parse the project kotlin version '{project}'", file=sys.stderr)
+elif library_key <= project_key:
+    print(f"kotlin_library_version={library_version}")
+    print("kotlin_compatibility=ok")
+else:
+    print(f"kotlin_library_version={library_version}")
+    print("kotlin_compatibility=review")
+    print(
+        f"note: library declares Kotlin {library_version}, newer than project {project}; "
+        "its Kotlin metadata may be unreadable. Do not bump Kotlin silently.",
+        file=sys.stderr,
+    )
+PY
+    fi
 fi
 
 if [ -n "$wanted" ]; then
