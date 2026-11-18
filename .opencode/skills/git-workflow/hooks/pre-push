@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Block pushes that update a protected branch (main/master).
+set -euo pipefail
+
+protected="${GIT_PROTECTED_BRANCHES:-main master}"
+
+is_protected() {
+  local branch="${1#refs/heads/}"
+  local b
+  for b in $protected; do
+    if [ "$branch" = "$b" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+blocked=""
+while read -r local_ref local_sha remote_ref remote_sha; do
+  if is_protected "$remote_ref"; then
+    blocked="$remote_ref"
+    break
+  fi
+done
+
+if [ -n "$blocked" ]; then
+  b="${blocked#refs/heads/}"
+  echo "ERROR: pushing to protected branch '$b' is blocked." >&2
+  echo "Push a feature branch instead, then open a pull request." >&2
+  exit 1
+fi
+
+current="$(git symbolic-ref --quiet --short HEAD || true)"
+if [ -n "$current" ] && is_protected "$current"; then
+  echo "ERROR: '$current' is a protected branch; pushing it is blocked." >&2
+  echo "Create a feature branch first:" >&2
+  echo "  git switch -c <type>/<slug> origin/$current" >&2
+  exit 1
+fi
+
+exit 0
