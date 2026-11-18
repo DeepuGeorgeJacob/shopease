@@ -1,0 +1,25 @@
+### Visual Studio Code ###
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+!.vscode/*.code-snippets
+.history/
+*.vsix
+
+### IntelliJ IDEA / JetBrains ###
+.idea/
+*.iml
+*.ipr
+*.iws
+**/workspace.xml
+**/tasks.xml
+**/usage.statistics.xml
+**/dictionaries
+**/shelf
+.gradle/
+build/
+out/
+!**/src/main/**/out/
+!**/src/test/**/out/
