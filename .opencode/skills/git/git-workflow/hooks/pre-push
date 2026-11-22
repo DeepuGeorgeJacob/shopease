@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Block pushes that update a protected branch (main/master).
+# Block pushes that update a protected branch (main/master) or publish tags.
 set -euo pipefail
 
 protected="${GIT_PROTECTED_BRANCHES:-main master}"
@@ -15,18 +15,31 @@ is_protected() {
   return 1
 }
 
-blocked=""
+blocked_branch=""
+blocked_tag=""
 while read -r local_ref local_sha remote_ref remote_sha; do
-  if is_protected "$remote_ref"; then
-    blocked="$remote_ref"
-    break
-  fi
+  case "$remote_ref" in
+    refs/tags/*)
+      blocked_tag="$remote_ref"
+      ;;
+    *)
+      if is_protected "$remote_ref"; then
+        blocked_branch="$remote_ref"
+      fi
+      ;;
+  esac
 done
 
-if [ -n "$blocked" ]; then
-  b="${blocked#refs/heads/}"
+if [ -n "$blocked_branch" ]; then
+  b="${blocked_branch#refs/heads/}"
   echo "ERROR: pushing to protected branch '$b' is blocked." >&2
   echo "Push a feature branch instead, then open a pull request." >&2
+  exit 1
+fi
+
+if [ -n "$blocked_tag" ]; then
+  echo "ERROR: pushing tags is blocked ('${blocked_tag#refs/tags/}')." >&2
+  echo "Remove tag refs from the push (no --tags or refs/tags/... refspec). Push only branches." >&2
   exit 1
 fi
 
