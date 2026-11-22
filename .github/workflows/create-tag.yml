@@ -1,0 +1,74 @@
+name: Create Tag
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Tag name (leave blank to auto-increment the latest version tag)'
+        required: false
+        type: string
+      tag_message:
+        description: 'Tag message, format "S<number>: Message" (e.g. S1: Initial release)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  create-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate inputs and create tag
+        env:
+          INPUT_TAG_NAME: ${{ inputs.tag_name }}
+          INPUT_TAG_MESSAGE: ${{ inputs.tag_message }}
+        run: |
+          set -euo pipefail
+
+          message="$INPUT_TAG_MESSAGE"
+          if ! [[ "$message" =~ ^S[0-9]+:\ .+$ ]]; then
+            echo "::error::Tag message must be in the format 'S<number>: Message' (for example 'S1: Initial release'). Got: $message"
+            exit 1
+          fi
+
+          tag="$INPUT_TAG_NAME"
+          if [ -z "$tag" ]; then
+            latest=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1)
+            if [ -z "$latest" ]; then
+              tag="v0.0.1"
+            elif [[ "$latest" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+              tag="v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$((BASH_REMATCH[3] + 1))"
+            else
+              echo "::error::Cannot parse latest tag '$latest' for auto-increment"
+              exit 1
+            fi
+            echo "Using auto-incremented tag: $tag"
+          fi
+
+          if ! git check-ref-format --allow-onelevel "$tag"; then
+            echo "::error::Invalid git tag name: $tag"
+            exit 1
+          fi
+
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "::error::Tag '$tag' already exists locally"
+            exit 1
+          fi
+          if git ls-remote --exit-code origin "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "::error::Tag '$tag' already exists on origin"
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git tag -a "$tag" -m "$message"
+          git push origin "refs/tags/$tag"
+
+          echo "Created and pushed annotated tag $tag at $(git rev-parse HEAD)"
