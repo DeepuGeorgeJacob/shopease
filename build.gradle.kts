@@ -12,8 +12,6 @@ version = "0.0.1-SNAPSHOT"
 description = "ShopEase"
 
 subprojects {
-    apply(plugin = "java")
-
     group = rootProject.group
     version = rootProject.version
 
@@ -21,13 +19,15 @@ subprojects {
         mavenCentral()
     }
 
-    extensions.configure<JavaPluginExtension> {
-        toolchain {
-            languageVersion = JavaLanguageVersion.of(21)
+    plugins.withId("java") {
+        extensions.configure<JavaPluginExtension> {
+            toolchain {
+                languageVersion = JavaLanguageVersion.of(21)
+            }
         }
-    }
 
-    tasks.withType<Test>().configureEach {
-        useJUnitPlatform()
+        tasks.withType<Test>().configureEach {
+            useJUnitPlatform()
+        }
     }
 }
