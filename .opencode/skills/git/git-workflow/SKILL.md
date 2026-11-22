@@ -36,6 +36,10 @@ the core path.
     state. Stop and ask if the diff looks suspicious.
 8.  Do not rewrite, rebase, or force-push a branch you did not create or that
     already has an open pull request unless the user explicitly confirms.
+9.  **Never push tags.** Tag pushes are blocked by the `pre-push` hook. If a
+    push would include tag refs (`git push --tags`, `push.followTags`, or an
+    explicit `refs/tags/...` refspec), ignore those tag refs and push only the
+    branch. Do not bypass the hook with `--no-verify`.
 
 ## Step 0: Protect the default branch
 
@@ -197,14 +201,19 @@ force a resolution the user did not approve.
 ```sh
 bash scripts/guard-branch.sh                 # HEAD must not be main/master
 bash scripts/guard-branch.sh --target <branch>  # target must not be main/master
-git push -u origin <branch>   # first push
-git push origin <branch>      # later pushes
+git push -u --no-tags origin refs/heads/<branch>:refs/heads/<branch>   # first push
+git push --no-tags origin refs/heads/<branch>:refs/heads/<branch>      # later pushes
 ```
 
+- Use an explicit branch refspec with `--no-tags` so only the branch is
+  published. If tags exist locally or are awaiting push, ignore them: never
+  include `refs/tags/...` or `--tags` in this workflow, and do not delete or
+  move local tags to work around the hook.
 - If either guard fails, show the error and do not push.
 - If the push is rejected because the branch was rewritten and it is your own
-  feature branch, use `git push --force-with-lease origin <branch>`. Never use
-  `--force`.
+  feature branch, use
+  `git push --force-with-lease --no-tags origin refs/heads/<branch>:refs/heads/<branch>`.
+  Never use `--force`.
 - Never push to the base branch.
 - If `gh` is available and the user wants a PR, report the compare URL and
   offer `gh pr create`.
@@ -232,7 +241,7 @@ This installs:
 
 - `.git/hooks/pre-commit` — aborts any commit made while on `main` or `master`.
 - `.git/hooks/pre-push` — aborts any push that updates `main`/`master`, even
-  when pushed from another branch.
+  when pushed from another branch, and aborts any push that publishes tags.
 
 Hooks are local to this clone. Offer to install them once per repository, and
 mention it in the final report. The protected list can be overridden with the
